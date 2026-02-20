@@ -4,8 +4,8 @@
 //! Build script that processes the XMDS WSDL file into Rust code
 //! that can call the services using ureq.
 
-use std::{fs::File, io::Write, path::PathBuf};
 use elementtree::Element;
+use std::{fs::File, io::Write, path::PathBuf};
 
 const WSDLFILE: &str = "xmds_v5.wsdl";
 
@@ -71,8 +71,11 @@ fn build_qtlib() {
     println!("cargo:rustc-link-search=native={}/build", dst.display());
     println!("cargo:rustc-link-lib=static=arexibogui");
 
-    let linker_script = std::fs::read_to_string(
-        format!("{}/build/CMakeFiles/dummy.dir/link.txt", dst.display())).unwrap();
+    let linker_script = std::fs::read_to_string(format!(
+        "{}/build/CMakeFiles/dummy.dir/link.txt",
+        dst.display()
+    ))
+    .unwrap();
     for line in linker_script.lines() {
         if line.contains(" -lc ") {
             let libpart = line.split(" -lc ").nth(1).unwrap();
@@ -105,19 +108,30 @@ fn convert_wsdl() {
             let rsname = if pname == "type" { "r#type" } else { &*pname }.to_string();
             let xsdtype = part.get_attr("type").unwrap().to_string();
             let rstype = match &*xsdtype {
-                "xsd:string" => if is_req { "&'a str" } else { "String" },
+                "xsd:string" => {
+                    if is_req {
+                        "&'a str"
+                    } else {
+                        "String"
+                    }
+                }
                 "xsd:int" => "i64",
                 "xsd:double" => "f64",
                 "xsd:base64Binary" => "Base64Field",
                 "xsd:boolean" => "bool",
-                _ => unimplemented!()
+                _ => unimplemented!(),
             };
             msg_members.push((pname, rsname, xsdtype, rstype));
         }
 
         // Write struct definition
-        writeln!(out, "#[derive(Debug)] pub struct {}{} {{",
-                 name, if is_req { "<'a>" } else { "" }).unwrap();
+        writeln!(
+            out,
+            "#[derive(Debug)] pub struct {}{} {{",
+            name,
+            if is_req { "<'a>" } else { "" }
+        )
+        .unwrap();
         for (_, rsname, _, rstype) in &msg_members {
             writeln!(out, "    pub {}: {},", rsname, rstype).unwrap();
         }
@@ -125,21 +139,36 @@ fn convert_wsdl() {
 
         if is_req {
             // Write serialization code if it's a request type
-            writeln!(out, r#"impl<'a> fmt::Display for {}<'a> {{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {{"#, name).unwrap();
+            writeln!(
+                out,
+                r#"impl<'a> fmt::Display for {}<'a> {{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {{"#,
+                name
+            )
+            .unwrap();
 
             for (pname, rsname, xsdtype, _) in &msg_members {
-                writeln!(out, r#"        write!(f, "<{} xsi:type=\"{}\">{{}}</{}>", self.{})?;"#,
-                       pname, xsdtype, pname, rsname).unwrap();
+                writeln!(
+                    out,
+                    r#"        write!(f, "<{} xsi:type=\"{}\">{{}}</{}>", self.{})?;"#,
+                    pname, xsdtype, pname, rsname
+                )
+                .unwrap();
             }
 
-            writeln!(out, r#"        Ok(())
+            writeln!(
+                out,
+                r#"        Ok(())
     }}
 }}
-"#).unwrap();
+"#
+            )
+            .unwrap();
         } else {
             // Write deserialization code if it's a response type
-            writeln!(out, r#"impl FromStr for {} {{
+            writeln!(
+                out,
+                r#"impl FromStr for {} {{
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self> {{
         let tree = Element::from_reader(&mut s.as_bytes()).context("XML parse")?;
@@ -153,14 +182,21 @@ fn convert_wsdl() {
                 bail!("got unexpected content tag: {{}}", tns.tag().name());
             }}
         }}
-        Ok(Self {{"#, name, name).unwrap();
+        Ok(Self {{"#,
+                name, name
+            )
+            .unwrap();
             for (pname, rsname, _, _) in &msg_members {
                 writeln!(out, r#"            {}: tns.find("{}").context("missing {}")?.text().parse().context("parsing {}")?,"#,
                        rsname, pname, pname, pname).unwrap();
             }
-            writeln!(out, "        }})
+            writeln!(
+                out,
+                "        }})
     }}
-}}\n").unwrap();
+}}\n"
+            )
+            .unwrap();
         }
     }
 
@@ -170,15 +206,25 @@ fn convert_wsdl() {
     for ptype in tree.find_all(PORT_TYPE) {
         for port in ptype.find_all(OPERATION) {
             let name = port.get_attr("name").unwrap();
-            let inp = port.get_child(1).unwrap()
-                          .get_attr("message").unwrap()
-                          .trim_start_matches("tns:");
-            let outp = port.get_child(2).unwrap()
-                           .get_attr("message").unwrap()
-                           .trim_start_matches("tns:");
+            let inp = port
+                .get_child(1)
+                .unwrap()
+                .get_attr("message")
+                .unwrap()
+                .trim_start_matches("tns:");
+            let outp = port
+                .get_child(2)
+                .unwrap()
+                .get_attr("message")
+                .unwrap()
+                .trim_start_matches("tns:");
 
-            writeln!(out, "    pub fn {}(&mut self, arg: {}) -> Result<{}> {{ self.request(\"{}\", arg) }}\n",
-                   name, inp, outp, name).unwrap();
+            writeln!(
+                out,
+                "    pub fn {}(&mut self, arg: {}) -> Result<{}> {{ self.request(\"{}\", arg) }}\n",
+                name, inp, outp, name
+            )
+            .unwrap();
         }
     }
 

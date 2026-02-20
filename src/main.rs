@@ -3,22 +3,22 @@
 
 //! Main entry point for the application.
 
+pub mod command;
 pub mod config;
+pub mod gui;
+pub mod layout;
+pub mod logger;
 pub mod mainloop;
-pub mod server;
 pub mod resource;
 pub mod schedule;
-pub mod layout;
+pub mod server;
+pub mod util;
 pub mod xmds;
 pub mod xmr;
-pub mod command;
-pub mod logger;
-pub mod util;
-pub mod gui;
 
-use std::path::PathBuf;
 use anyhow::{ensure, Context};
 use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -65,7 +65,10 @@ fn main() {
     if let Err(e) = main_inner() {
         // Exit code 2: display not authorized yet (transient, keep retrying)
         // Exit code 1: actual error (bad config, CMS unreachable, etc.)
-        if e.root_cause().downcast_ref::<mainloop::NotAuthorized>().is_some() {
+        if e.root_cause()
+            .downcast_ref::<mainloop::NotAuthorized>()
+            .is_some()
+        {
             log::warn!("{:#}", e);
             std::process::exit(2);
         }
@@ -80,21 +83,30 @@ fn main_inner() -> anyhow::Result<()> {
     let args = Args::parse();
 
     // check environment directory argument
-    ensure!(args.envdir.exists(), "environment directory '{}' does not exist",
-            args.envdir.display());
+    ensure!(
+        args.envdir.exists(),
+        "environment directory '{}' does not exist",
+        args.envdir.display()
+    );
     let cmscfg = args.envdir.join("cms.json");
 
     // check if we have a CMS config either stored, or given with arguments
     let cms = if let Some((address, key)) = args.host.zip(args.key) {
         let display_id = args.display_id.unwrap_or_else(util::get_display_id);
-        config::CmsSettings { address, key, display_id,
-                              display_name: args.display_name,
-                              proxy: args.proxy }
+        config::CmsSettings {
+            address,
+            key,
+            display_id,
+            display_name: args.display_name,
+            proxy: args.proxy,
+        }
     } else if let Ok(from_json) = config::CmsSettings::from_file(&cmscfg) {
         from_json
     } else {
-        anyhow::bail!("cms.json not found or invalid, run with the --host and --key \
-                       options to reconfigure");
+        anyhow::bail!(
+            "cms.json not found or invalid, run with the --host and --key \
+                       options to reconfigure"
+        );
     };
 
     cms.to_file(&cmscfg).context("writing new CMS config")?;
@@ -103,9 +115,16 @@ fn main_inner() -> anyhow::Result<()> {
     let (togui_tx, togui_rx) = crossbeam_channel::bounded(5);
     let (fromgui_tx, fromgui_rx) = crossbeam_channel::bounded(5);
 
-    let handler = mainloop::Handler::new(cms, args.clear, &args.envdir, args.no_verify,
-                                         args.allow_offline, togui_tx, fromgui_rx)
-        .context("creating backend handler")?;
+    let handler = mainloop::Handler::new(
+        cms,
+        args.clear,
+        &args.envdir,
+        args.no_verify,
+        args.allow_offline,
+        togui_tx,
+        fromgui_rx,
+    )
+    .context("creating backend handler")?;
     let mut settings = handler.player_settings();
 
     // apply setting to inhibit screensaver
@@ -116,8 +135,8 @@ fn main_inner() -> anyhow::Result<()> {
     }
 
     // create the interval webserver on the requested port
-    let webserver = server::Server::new(args.envdir.join("res"), 0)
-        .context("creating internal HTTP server")?;
+    let webserver =
+        server::Server::new(args.envdir.join("res"), 0).context("creating internal HTTP server")?;
     settings.embedded_server_port = webserver.port();
     webserver.start_pool();
 

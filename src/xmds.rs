@@ -9,16 +9,16 @@ mod soap {
     include!(concat!(env!("OUT_DIR"), "/xmds_soap.rs"));
 }
 
-use std::{collections::HashMap, fs, path::PathBuf};
+use crate::command::Command;
+use crate::config::{CmsSettings, PlayerSettings};
+use crate::logger::LogEntry;
+use crate::resource::ReqFile;
+use crate::schedule::Schedule;
+use crate::util::{get_display_name, retrieve_mac, Base64Field, ElementExt, TIME_FMT};
 use anyhow::{ensure, Context, Result};
 use elementtree::Element;
 use serde::Serialize;
-use crate::config::{CmsSettings, PlayerSettings};
-use crate::command::Command;
-use crate::util::{TIME_FMT, Base64Field, ElementExt, retrieve_mac, get_display_name};
-use crate::resource::ReqFile;
-use crate::schedule::Schedule;
-use crate::logger::LogEntry;
+use std::{collections::HashMap, fs, path::PathBuf};
 
 /// Proxy for the XMDS calls to the CMS.
 pub struct Cms {
@@ -33,12 +33,21 @@ pub struct Cms {
 }
 
 impl Cms {
-    pub fn new(cms: &CmsSettings, pub_key: String, no_verify: bool, xml_dir: PathBuf) -> Result<Self> {
+    pub fn new(
+        cms: &CmsSettings,
+        pub_key: String,
+        no_verify: bool,
+        xml_dir: PathBuf,
+    ) -> Result<Self> {
         Ok(Self {
-            service: soap::Service::new(format!("{}/xmds.php?v=5", cms.address),
-                                        cms.make_agent(no_verify)?),
-            display_name: cms.display_name.as_ref().map_or_else(get_display_name,
-                                                                |name| name.to_owned()),
+            service: soap::Service::new(
+                format!("{}/xmds.php?v=5", cms.address),
+                cms.make_agent(no_verify)?,
+            ),
+            display_name: cms
+                .display_name
+                .as_ref()
+                .map_or_else(get_display_name, |name| name.to_owned()),
             mac_addr: retrieve_mac().unwrap_or_else(|| "00:00:00:00:00:00".into()),
             channel: cms.xmr_channel(),
             cms_key: cms.key.to_owned(),
@@ -49,8 +58,9 @@ impl Cms {
     }
 
     pub fn register_display(&mut self) -> Result<Option<PlayerSettings>> {
-        let xml = self.service.RegisterDisplay(
-            soap::RegisterDisplayRequest {
+        let xml = self
+            .service
+            .RegisterDisplay(soap::RegisterDisplayRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 displayName: &self.display_name,
@@ -61,29 +71,38 @@ impl Cms {
                 macAddress: &self.mac_addr,
                 xmrChannel: &self.channel,
                 xmrPubKey: &self.pub_key,
-            }
-        ).context("registering display")?.ActivationMessage;
+            })
+            .context("registering display")?
+            .ActivationMessage;
         let _ = fs::write(self.xml_dir.join("register.xml"), &xml);
 
-        let tree = Element::from_reader(&mut xml.as_bytes()).context("parsing activation message")?;
-        let code = tree.get_attr("code").context("no result code in activation")?;
+        let tree =
+            Element::from_reader(&mut xml.as_bytes()).context("parsing activation message")?;
+        let code = tree
+            .get_attr("code")
+            .context("no result code in activation")?;
         if code != "READY" {
             Ok(None)
         } else {
             let mut commands = HashMap::new();
             for cmds in tree.find_all("commands") {
                 for el in cmds.children() {
-                    commands.insert(el.tag().name().into(),
-                                    Command {
-                                        command: el.parse_child("commandString")?,
-                                        validate: el.def_child("validationString", "")?,
-                                        alerts: el.def_child("createAlertOn", "")?,
-                                    });
+                    commands.insert(
+                        el.tag().name().into(),
+                        Command {
+                            command: el.parse_child("commandString")?,
+                            validate: el.def_child("validationString", "")?,
+                            alerts: el.def_child("createAlertOn", "")?,
+                        },
+                    );
                 }
             }
 
             Ok(Some(PlayerSettings {
                 xmr_network_address: tree.parse_child("xmrNetworkAddress")?,
+                xmr_websocket_address: tree.def_child("xmrWebSocketAddress", "")?,
+                xmr_type: tree.def_child("xmrType", "")?,
+                xmr_cms_key: tree.def_child("xmrCmsKey", "")?,
                 log_level: tree.parse_child("logLevel")?,
                 display_name: tree.parse_child("displayName")?,
                 stats_enabled: tree.parse_child::<i32>("statsEnabled")? != 0,
@@ -101,12 +120,14 @@ impl Cms {
     }
 
     pub fn required_files(&mut self) -> Result<(Vec<ReqFile>, Vec<String>)> {
-        let xml = self.service.RequiredFiles(
-            soap::RequiredFilesRequest {
+        let xml = self
+            .service
+            .RequiredFiles(soap::RequiredFilesRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
-            }
-        ).context("getting required files")?.RequiredFilesXml;
+            })
+            .context("getting required files")?
+            .RequiredFilesXml;
         let _ = fs::write(self.xml_dir.join("required.xml"), &xml);
 
         let tree = Element::from_reader(&mut xml.as_bytes()).context("parsing required files")?;
@@ -119,7 +140,7 @@ impl Cms {
                 let (path, name) = if http {
                     (file.parse_attr("path")?, file.parse_attr("saveAs")?)
                 } else {
-                    let mut path= file.parse_attr::<String>("path")?;
+                    let mut path = file.parse_attr::<String>("path")?;
                     if typ == "layout" {
                         path.push_str(".xlf");
                     }
@@ -128,12 +149,17 @@ impl Cms {
                 res.push(ReqFile::File {
                     id: file.parse_attr("id")?,
                     // match seems like a no-op but maps to a &'static str
-                    typ: match typ { "media" => "media", "layout" => "layout",
-                                      _ => unreachable!() },
+                    typ: match typ {
+                        "media" => "media",
+                        "layout" => "layout",
+                        _ => unreachable!(),
+                    },
                     size: file.parse_attr("size")?,
                     md5: hex::decode(&file.parse_attr::<String>("md5")?)?,
                     code: file.get_attr("code").map(Into::into),
-                    path, name, http,
+                    path,
+                    name,
+                    http,
                 });
             } else if typ == "resource" {
                 res.push(ReqFile::Resource {
@@ -158,53 +184,67 @@ impl Cms {
     }
 
     pub fn get_schedule(&mut self) -> Result<Schedule> {
-        let xml = self.service.Schedule(
-            soap::ScheduleRequest {
+        let xml = self
+            .service
+            .Schedule(soap::ScheduleRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
-            }
-        ).context("getting schedule")?.ScheduleXml;
+            })
+            .context("getting schedule")?
+            .ScheduleXml;
         let _ = fs::write(self.xml_dir.join("schedule.xml"), &xml);
 
         let tree = Element::from_reader(&mut xml.as_bytes()).context("parsing schedule")?;
         Schedule::parse(tree)
     }
 
-    pub fn get_file_data(&mut self, file: i64, ftype: &str, offset: u64, size: u64) -> Result<Vec<u8>> {
-        Ok(self.service.GetFile(
-            soap::GetFileRequest {
+    pub fn get_file_data(
+        &mut self,
+        file: i64,
+        ftype: &str,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>> {
+        Ok(self
+            .service
+            .GetFile(soap::GetFileRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 fileId: file,
                 fileType: ftype,
                 chunkOffset: offset as f64,
                 chuckSize: size as f64,
-            }
-        ).context("getting file data")?.file.0)
+            })
+            .context("getting file data")?
+            .file
+            .0)
     }
 
     pub fn get_resource(&mut self, layout: i64, region: &str, media: &str) -> Result<String> {
-        Ok(self.service.GetResource(
-            soap::GetResourceRequest {
+        Ok(self
+            .service
+            .GetResource(soap::GetResourceRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 layoutId: layout,
                 regionId: region,
                 mediaId: media,
-            }
-        ).context("getting resource")?.resource)
+            })
+            .context("getting resource")?
+            .resource)
     }
 
     pub fn blacklist(&mut self, media: i64, mtype: &str, reason: &str) -> Result<()> {
-        let res = self.service.BlackList(
-            soap::BlackListRequest {
+        let res = self
+            .service
+            .BlackList(soap::BlackListRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 mediaId: media,
                 r#type: mtype,
                 reason,
-            }
-        ).context("blacklisting media")?;
+            })
+            .context("blacklisting media")?;
         ensure!(res.success, "blacklisting not successful");
         Ok(())
     }
@@ -220,13 +260,14 @@ impl Cms {
         }
 
         let inv_xml = format!("<![CDATA[{}]]>", files.to_string()?);
-        let res = self.service.MediaInventory(
-            soap::MediaInventoryRequest {
+        let res = self
+            .service
+            .MediaInventory(soap::MediaInventoryRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 mediaInventory: &inv_xml,
-            }
-        ).context("submitting media inventory")?;
+            })
+            .context("submitting media inventory")?;
         ensure!(res.success, "submitting inventory not successful");
         Ok(())
     }
@@ -237,42 +278,46 @@ impl Cms {
             let mut log = Element::new("log");
             log.set_attr("date", entry.date.format(&TIME_FMT).expect("time fmt"));
             log.set_attr("category", entry.category);
-            log.append_child(Element::new("message")).set_text(&entry.message);
+            log.append_child(Element::new("message"))
+                .set_text(&entry.message);
             logs.append_child(log);
         }
 
         let log_xml = format!("<![CDATA[{}]]>", logs.to_string()?);
-        let res = self.service.SubmitLog(
-            soap::SubmitLogRequest {
+        let res = self
+            .service
+            .SubmitLog(soap::SubmitLogRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
-                logXml: &log_xml
-            }
-        ).context("submitting logs")?;
+                logXml: &log_xml,
+            })
+            .context("submitting logs")?;
         ensure!(res.success, "submitting logs not successful");
         Ok(())
     }
 
     pub fn submit_stats(&mut self, stat_xml: &str) -> Result<()> {
-        let res = self.service.SubmitStats(
-            soap::SubmitStatsRequest {
+        let res = self
+            .service
+            .SubmitStats(soap::SubmitStatsRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
-                statXml: stat_xml
-            }
-        ).context("submitting stats")?;
+                statXml: stat_xml,
+            })
+            .context("submitting stats")?;
         ensure!(res.success, "submitting stats not successful");
         Ok(())
     }
 
     pub fn submit_screenshot(&mut self, shot: Vec<u8>) -> Result<()> {
-        let res = self.service.SubmitScreenShot(
-            soap::SubmitScreenShotRequest {
+        let res = self
+            .service
+            .SubmitScreenShot(soap::SubmitScreenShotRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 screenShot: Base64Field(shot),
-            }
-        ).context("submitting screenshot")?;
+            })
+            .context("submitting screenshot")?;
         ensure!(res.success, "submitting screenshot not successful");
         Ok(())
     }
@@ -286,13 +331,14 @@ impl Cms {
     }
 
     fn notify_status_raw(&mut self, status: String) -> Result<()> {
-        let res = self.service.NotifyStatus(
-            soap::NotifyStatusRequest {
+        let res = self
+            .service
+            .NotifyStatus(soap::NotifyStatusRequest {
                 serverKey: &self.cms_key,
                 hardwareKey: &self.hw_key,
                 status: &status,
-            }
-        ).context("notifying status")?;
+            })
+            .context("notifying status")?;
         ensure!(res.success, "status notification not successful");
         Ok(())
     }
