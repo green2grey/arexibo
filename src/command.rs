@@ -3,10 +3,15 @@
 
 //! Player command handling.
 
-use std::{collections::HashMap, io::{Read, Write}, time::Duration, process};
 use anyhow::{bail, Context, Result};
 use itertools::Itertools;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+    process,
+    time::Duration,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -31,7 +36,10 @@ impl Command {
         };
 
         if !self.validate.is_empty() {
-            log::info!("validating command result {result:?} against {:?}", self.validate);
+            log::info!(
+                "validating command result {result:?} against {:?}",
+                self.validate
+            );
             let rx = regex::Regex::new(&self.validate).context("invalid validation Regex")?;
             Ok(rx.is_match(&result))
         } else {
@@ -49,10 +57,13 @@ impl Command {
     }
 
     fn run_http(&self) -> Result<String> {
-        let (_, url, content_type, opts) = self.command.split("|").collect_tuple()
+        let (_, url, content_type, opts) = self
+            .command
+            .split("|")
+            .collect_tuple()
             .context("invalid HTTP command string")?;
-        let opts: HttpOpts = serde_json::from_str(opts)
-            .context("invalid HTTP option dictionary")?;
+        let opts: HttpOpts =
+            serde_json::from_str(opts).context("invalid HTTP option dictionary")?;
 
         let mut builder = ureq::http::Request::builder()
             .method(opts.method.as_str())
@@ -65,7 +76,8 @@ impl Command {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
             .timeout_global(Some(TIMEOUT))
-            .build().into();
+            .build()
+            .into();
         let result = agent.run(request).context("making HTTP request")?;
 
         // strange, but the status code is the only thing used for validation
@@ -73,36 +85,41 @@ impl Command {
     }
 
     fn run_rs232(&self) -> Result<String> {
-        let (_, params, msg) = self.command.split("|").collect_tuple()
+        let (_, params, msg) = self
+            .command
+            .split("|")
+            .collect_tuple()
             .context("invalid RS232 command string")?;
-        let (dev, baud, bits, parity, stop, handshake, hex) =
-            params.split(",").collect_tuple().context("invalid RS232 param string")?;
+        let (dev, baud, bits, parity, stop, handshake, hex) = params
+            .split(",")
+            .collect_tuple()
+            .context("invalid RS232 param string")?;
         let baud = baud.parse().context("invalid RS232 baud rate")?;
         let bits = match bits {
             "5" => serialport::DataBits::Five,
             "6" => serialport::DataBits::Six,
             "7" => serialport::DataBits::Seven,
             "8" => serialport::DataBits::Eight,
-            _ => bail!("invalid RS232 data bits")
+            _ => bail!("invalid RS232 data bits"),
         };
         let parity = match parity {
             "None" => serialport::Parity::None,
             "Odd" => serialport::Parity::Odd,
             "Even" => serialport::Parity::Even,
-            _ => bail!("invalid RS232 parity")
+            _ => bail!("invalid RS232 parity"),
         };
         let stop = match stop {
             "None" => serialport::StopBits::One,
             "One" => serialport::StopBits::One,
             "OnePointFive" => serialport::StopBits::Two,
             "Two" => serialport::StopBits::Two,
-            _ => bail!("invalid RS232 stop bits")
+            _ => bail!("invalid RS232 stop bits"),
         };
         let handshake = match handshake {
             "None" => serialport::FlowControl::None,
             "XOnXOff" => serialport::FlowControl::Software,
             "RequestToSend" => serialport::FlowControl::Hardware,
-            _ => bail!("invalid RS232 handshake")
+            _ => bail!("invalid RS232 handshake"),
         };
 
         let mut port = serialport::new(dev, baud)
@@ -114,7 +131,10 @@ impl Command {
             .open_native()?;
 
         let data = if hex == "1" {
-            let msg = msg.chars().filter(|&c| !c.is_whitespace()).collect::<String>();
+            let msg = msg
+                .chars()
+                .filter(|&c| !c.is_whitespace())
+                .collect::<String>();
             hex::decode(&msg).context("invalid RS232 hex message")?
         } else {
             msg.as_bytes().to_vec()
@@ -144,5 +164,5 @@ impl Command {
 struct HttpOpts {
     method: String,
     headers: HashMap<String, String>,
-    body: String
+    body: String,
 }

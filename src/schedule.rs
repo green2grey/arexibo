@@ -3,13 +3,13 @@
 
 //! Schedule parsing and scheduling.
 
-use std::{cmp::Ordering, fs::File, path::Path};
-use anyhow::{Context, Result};
-use time::{OffsetDateTime, PrimitiveDateTime};
-use elementtree::Element;
-use serde::{Serialize, Deserialize};
 use crate::resource::LayoutId;
-use crate::util::{TIME_FMT, ElementExt};
+use crate::util::{ElementExt, TIME_FMT};
+use anyhow::{Context, Result};
+use elementtree::Element;
+use serde::{Deserialize, Serialize};
+use std::{cmp::Ordering, fs::File, path::Path};
+use time::{OffsetDateTime, PrimitiveDateTime};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Schedule {
@@ -39,10 +39,7 @@ impl Schedule {
             default = Some(def.parse_attr("file")?);
         }
 
-        Ok(Self {
-            default,
-            schedules
-        })
+        Ok(Self { default, schedules })
     }
 
     pub fn layouts_now(&self) -> Vec<LayoutId> {
@@ -57,7 +54,7 @@ impl Schedule {
                         cur_prio = prio;
                         layouts.clear();
                     }
-                    _ => ()
+                    _ => (),
                 }
                 layouts.push(lid);
             }
@@ -71,8 +68,7 @@ impl Schedule {
     }
 
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        serde_json::from_reader(File::open(path.as_ref())?)
-            .context("deserializing schedule")
+        serde_json::from_reader(File::open(path.as_ref())?).context("deserializing schedule")
     }
 
     pub fn to_file(&self, path: impl AsRef<Path>) -> Result<()> {

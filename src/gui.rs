@@ -3,12 +3,12 @@
 
 //! Bindings to the C++/Qt GUI part of the application.
 
+use crate::config::PlayerSettings;
+use crate::mainloop::{FromGui, Kill, ToGui};
+use crate::resource::LayoutId;
+use crossbeam_channel::{Receiver, Sender};
 use std::ffi::{c_void, CStr, CString};
 use std::sync::{Arc, Mutex};
-use crossbeam_channel::{Sender, Receiver};
-use crate::config::PlayerSettings;
-use crate::mainloop::{ToGui, FromGui, Kill};
-use crate::resource::LayoutId;
 
 #[path = "qt_binding.rs"]
 #[allow(non_camel_case_types)]
@@ -19,31 +19,49 @@ struct CallbackData {
     schedule: Arc<Mutex<Schedule<LayoutId>>>,
 }
 
-pub fn run(settings: PlayerSettings, inspect: bool, debug: bool,
-           togui: Receiver<ToGui>, fromgui: Sender<FromGui>) {
+pub fn run(
+    settings: PlayerSettings,
+    inspect: bool,
+    debug: bool,
+    togui: Receiver<ToGui>,
+    fromgui: Sender<FromGui>,
+) {
     let base_uri = format!("http://localhost:{}/", settings.embedded_server_port);
     let fromgui_2 = fromgui.clone();
 
     let schedule = Arc::new(Mutex::new(Schedule::<LayoutId>::default()));
 
-    let cb_data = CallbackData { sender: fromgui_2, schedule: schedule.clone() };
+    let cb_data = CallbackData {
+        sender: fromgui_2,
+        schedule: schedule.clone(),
+    };
     let cb_data = Box::leak(Box::new(cb_data)) as *mut _ as *mut c_void;
 
     let title = CString::new(settings.display_name).unwrap();
     let base_uri = CString::new(base_uri).unwrap();
     unsafe {
-        cpp::setup(base_uri.as_ptr(), inspect as _, debug as _, Some(callback), cb_data);
+        cpp::setup(
+            base_uri.as_ptr(),
+            inspect as _,
+            debug as _,
+            Some(callback),
+            cb_data,
+        );
         cpp::set_title(title.as_ptr());
-        cpp::set_size(settings.pos_x as _, settings.pos_y as _,
-                      settings.size_x as _, settings.size_y as _);
+        cpp::set_size(
+            settings.pos_x as _,
+            settings.pos_y as _,
+            settings.size_x as _,
+            settings.size_y as _,
+        );
     }
 
     std::thread::spawn(move || {
         for msg in togui {
             match msg {
-                ToGui::Screenshot => {
-                    unsafe { cpp::screenshot(); }
-                }
+                ToGui::Screenshot => unsafe {
+                    cpp::screenshot();
+                },
                 ToGui::Settings(s) => {
                     let title = CString::new(s.display_name).unwrap();
                     unsafe {
@@ -61,8 +79,8 @@ pub fn run(settings: PlayerSettings, inspect: bool, debug: bool,
                     }
                 }
                 ToGui::WebHook(code) => {
-                    let code = CString::new(format!(
-                        "window.arexibo.trigger(\"{code}\");")).unwrap();
+                    let code =
+                        CString::new(format!("window.arexibo.trigger(\"{code}\");")).unwrap();
                     unsafe {
                         cpp::run_js(code.as_ptr());
                     }
@@ -70,7 +88,6 @@ pub fn run(settings: PlayerSettings, inspect: bool, debug: bool,
             }
         }
     });
-
 
     unsafe {
         cpp::run();
@@ -83,10 +100,14 @@ extern "C" fn callback(ptr: *mut c_void, typ: isize, arg1: isize, arg2: isize, _
     match typ {
         cpp::CB_SCREENSHOT => {
             let data = unsafe { std::slice::from_raw_parts(arg1 as *const u8, arg2 as usize) };
-            cb_data.sender.send(FromGui::Screenshot(data.to_vec())).unwrap();
+            cb_data
+                .sender
+                .send(FromGui::Screenshot(data.to_vec()))
+                .unwrap();
         }
         cpp::CB_LAYOUT_INIT => {
-            if arg1 > 0 {  // don't announce the splash screen
+            if arg1 > 0 {
+                // don't announce the splash screen
                 cb_data.sender.send(FromGui::Showing(arg1 as _)).unwrap();
             }
         }
@@ -207,7 +228,9 @@ impl<T: Eq + Default + Clone> Schedule<T> {
 
     /// Return current layout.
     fn current(&self) -> T {
-        self.index.map(|i| self.layouts[i].clone()).unwrap_or_default()
+        self.index
+            .map(|i| self.layouts[i].clone())
+            .unwrap_or_default()
     }
 
     /// Mark current layout as having run.
@@ -219,7 +242,11 @@ impl<T: Eq + Default + Clone> Schedule<T> {
 #[cfg(test)]
 #[test]
 fn test_schedule() {
-    let mut schedule = Schedule { index: None, layouts: vec![], single_done: false };
+    let mut schedule = Schedule {
+        index: None,
+        layouts: vec![],
+        single_done: false,
+    };
     assert_eq!(schedule.next(), None);
     assert_eq!(schedule.update(vec![]), Some(0));
     assert_eq!(schedule.update(vec![1]), Some(1));

@@ -3,12 +3,16 @@
 
 //! XLF layout parser and translator.
 
-use std::{fs, io::{Write, BufWriter}, collections::HashMap};
-use std::path::Path;
+use crate::resource::LayoutId;
+use crate::util::{percent_decode, ElementExt};
 use anyhow::{Context, Result};
 use elementtree::Element;
-use crate::resource::LayoutId;
-use crate::util::{ElementExt, percent_decode};
+use std::path::Path;
+use std::{
+    collections::HashMap,
+    fs,
+    io::{BufWriter, Write},
+};
 
 // TODO:
 // - transitions
@@ -107,7 +111,6 @@ window.arexibo = {
 };
 "#;
 
-
 type MediaInfo = (i32, String, String, String);
 
 pub struct Translator<'a> {
@@ -120,15 +123,26 @@ pub struct Translator<'a> {
 }
 
 impl<'a> Translator<'a> {
-    pub fn new(id: LayoutId, xlf: &Path, html: &Path,
-               code_map: &'a HashMap<String, LayoutId>) -> Result<Self> {
+    pub fn new(
+        id: LayoutId,
+        xlf: &Path,
+        html: &Path,
+        code_map: &'a HashMap<String, LayoutId>,
+    ) -> Result<Self> {
         let file = fs::File::open(xlf)?;
         let tree = Some(Element::from_reader(file).context("parsing XLF")?);
 
         let out = fs::File::create(html)?;
         let out = BufWriter::new(out);
 
-        Ok(Self { id, tree, out, regions: Vec::new(), size: (0, 0), code_map })
+        Ok(Self {
+            id,
+            tree,
+            out,
+            regions: Vec::new(),
+            size: (0, 0),
+            code_map,
+        })
     }
 
     pub fn translate(mut self) -> Result<(i32, i32)> {
@@ -159,7 +173,11 @@ impl<'a> Translator<'a> {
         let layoutcode = el.def_attr("layoutCode", "<not set>");
         let mut layoutid = 0;
         if action == "navLayout" {
-            layoutid = self.code_map.get(layoutcode).cloned().context("unknown layout code")?;
+            layoutid = self
+                .code_map
+                .get(layoutcode)
+                .cloned()
+                .context("unknown layout code")?;
         }
         if typ == "webhook" {
             writeln!(self.out, "window.arexibo.triggers[{code:?}] = {{")?;
@@ -180,20 +198,34 @@ impl<'a> Translator<'a> {
     fn write_header(&mut self, el: &Element) -> Result<()> {
         self.size = (el.parse_attr("width")?, el.parse_attr("height")?);
 
-        writeln!(self.out, "<!DOCTYPE html>\n<!-- VERSION={} -->", TRANSLATOR_VERSION)?;
+        writeln!(
+            self.out,
+            "<!DOCTYPE html>\n<!-- VERSION={} -->",
+            TRANSLATOR_VERSION
+        )?;
         writeln!(self.out, "<html><head>")?;
         writeln!(self.out, "<meta charset='utf-8'>")?;
-        writeln!(self.out, "<script src='qrc:///qtwebchannel/qwebchannel.js'></script>")?;
-        writeln!(self.out, "<script type='text/javascript'>{}\
+        writeln!(
+            self.out,
+            "<script src='qrc:///qtwebchannel/qwebchannel.js'></script>"
+        )?;
+        writeln!(
+            self.out,
+            "<script type='text/javascript'>{}\
                             window.arexibo.id = {};\n\
                             window.arexibo.width = {};\n\
                             window.arexibo.height = {};\n\
-                            </script>", SCRIPT, self.id, self.size.0, self.size.1)?;
+                            </script>",
+            SCRIPT, self.id, self.size.0, self.size.1
+        )?;
         writeln!(self.out, "<style type='text/css'>{}", LAYOUT_CSS)?;
 
         if let Some(file) = el.get_attr("background") {
-            writeln!(self.out, "body {{ background-image: url('{file}'); \
-                                background-size: 100vw 100vh; }}")?;
+            writeln!(
+                self.out,
+                "body {{ background-image: url('{file}'); \
+                                background-size: 100vw 100vh; }}"
+            )?;
         }
         if let Some(color) = el.get_attr("bgcolor") {
             writeln!(self.out, "body {{ background-color: {color}; }}")?;
@@ -206,8 +238,11 @@ impl<'a> Translator<'a> {
 
     fn write_footer(&mut self) -> Result<()> {
         // start all regions' first item
-        writeln!(self.out, "<script type='text/javascript'>\n\
-                            window.addEventListener('load', function() {{")?;
+        writeln!(
+            self.out,
+            "<script type='text/javascript'>\n\
+                            window.addEventListener('load', function() {{"
+        )?;
         for rid in &self.regions {
             writeln!(self.out, "  window.arexibo.region_switch({rid}, 0, true);")?;
         }
@@ -226,9 +261,12 @@ impl<'a> Translator<'a> {
         writeln!(self.out, "<!-- region {} -->", rid)?;
 
         if let Some(zindex) = region.get_attr("zindex") {
-            writeln!(self.out, "<style type='text/css'> \
+            writeln!(
+                self.out,
+                "<style type='text/css'> \
                                 .r{rid} {{ z-index: {zindex}; }} \
-                                </style>")?;
+                                </style>"
+            )?;
         }
 
         let mut sequence = Vec::new();
@@ -256,14 +294,20 @@ impl<'a> Translator<'a> {
         // for each media, write functions to start/stop displaying it
         for (mid, duration, add_start, add_stop) in sequence {
             writeln!(self.out, "    [function() {{")?;
-            writeln!(self.out, "      document.getElementById('m{mid}').style.\
-                                visibility = 'visible';")?;
+            writeln!(
+                self.out,
+                "      document.getElementById('m{mid}').style.\
+                                visibility = 'visible';"
+            )?;
             writeln!(self.out, "      {add_start}")?;
             writeln!(self.out, "    }}, function() {{")?;
             // if only one item is present, don't need to hide the others
             if nitems > 1 {
-                writeln!(self.out, "      document.getElementById('m{mid}').style.\
-                                    visibility = 'hidden'; ")?;
+                writeln!(
+                    self.out,
+                    "      document.getElementById('m{mid}').style.\
+                                    visibility = 'hidden'; "
+                )?;
             }
             writeln!(self.out, "      {add_stop}")?;
             writeln!(self.out, "    }}, {duration}],")?;
@@ -274,57 +318,82 @@ impl<'a> Translator<'a> {
         Ok(())
     }
 
-    fn write_media(&mut self, rid: i32, [x, y, w, h]: [i32; 4],
-                   media: &Element) -> Result<Option<MediaInfo>> {
+    fn write_media(
+        &mut self,
+        rid: i32,
+        [x, y, w, h]: [i32; 4],
+        media: &Element,
+    ) -> Result<Option<MediaInfo>> {
         let mid = media.parse_attr("id")?;
         let opts = media.find("options").context("no options")?;
         let mut duration = format!(
-            "() => {}", media.def_attr("duration", "").parse::<i32>().unwrap_or(10));
+            "() => {}",
+            media.def_attr("duration", "").parse::<i32>().unwrap_or(10)
+        );
         let mut add_start = "".into();
         let mut add_stop = "".into();
         writeln!(self.out, "  <!-- media {mid} -->")?;
         match (media.get_attr("render"), media.get_attr("type")) {
-            (Some("html"), _) |
-            (_, Some("text" | "ticker")) => {
-                writeln!(self.out, "<iframe class='media r{rid}' id='m{mid}' \
+            (Some("html"), _) | (_, Some("text" | "ticker")) => {
+                writeln!(
+                    self.out,
+                    "<iframe class='media r{rid}' id='m{mid}' \
                                     src='{mid}.html?w={w}&h={h}' \
                                     style='left: {x}px; top: {y}px; width: {w}px; \
-                                    height: {h}px;'></iframe>")?;
+                                    height: {h}px;'></iframe>"
+                )?;
             }
             (_, Some("webpage")) => {
                 let url = percent_decode(opts.find("uri").context("no web uri")?.text());
-                writeln!(self.out, "<iframe class='media r{rid}' id='m{mid}' src='{url}' \
+                writeln!(
+                    self.out,
+                    "<iframe class='media r{rid}' id='m{mid}' src='{url}' \
                                     style='left: {x}px; top: {y}px; width: {w}px; \
-                                    height: {h}px;'></iframe>")?;
+                                    height: {h}px;'></iframe>"
+                )?;
             }
             (_, Some("pdf")) => {
                 let filename = opts.find("uri").context("no pdf uri")?.text();
-                writeln!(self.out, "<iframe class='media r{rid}' id='m{mid}' src='{filename}' \
+                writeln!(
+                    self.out,
+                    "<iframe class='media r{rid}' id='m{mid}' src='{filename}' \
                                     style='left: {x}px; top: {y}px; width: {w}px; \
-                                    height: {h}px;'></iframe>")?;
+                                    height: {h}px;'></iframe>"
+                )?;
             }
             (_, Some("image")) => {
                 let filename = opts.find("uri").context("no image uri")?.text();
-                writeln!(self.out, "<img class='media r{rid}' id='m{mid}' src='{filename}' \
+                writeln!(
+                    self.out,
+                    "<img class='media r{rid}' id='m{mid}' src='{filename}' \
                                     style='left: {x}px; top: {y}px; width: {w}px; \
                                     height: {h}px;{}{}'>",
-                         object_fit(opts), object_pos(opts))?;
+                    object_fit(opts),
+                    object_pos(opts)
+                )?;
             }
             (_, Some("video")) | (_, Some("localvideo")) => {
                 let url = percent_decode(opts.find("uri").context("no video uri")?.text());
                 let mute = opts.find("mute").map_or(false, |el| el.text() == "1");
-                writeln!(self.out, "<video class='media r{rid}' id='m{mid}' src='{url}' {} \
+                writeln!(
+                    self.out,
+                    "<video class='media r{rid}' id='m{mid}' src='{url}' {} \
                                     style='left: {x}px; top: {y}px; width: {w}px; \
                                     height: {h}px;{}{}'></video>",
-                         if mute { "muted" } else { "" },
-                         object_fit(opts), object_pos(opts))?;
+                    if mute { "muted" } else { "" },
+                    object_fit(opts),
+                    object_pos(opts)
+                )?;
                 add_start = format!("document.getElementById('m{}').play();", mid);
                 duration = format!("() => document.getElementById('m{}').duration", mid);
             }
             (_, Some("shellcommand")) => {
-                writeln!(self.out, "<div class='media r{rid}' id='m{mid}' \
+                writeln!(
+                    self.out,
+                    "<div class='media r{rid}' id='m{mid}' \
                                     style='left: {x}px; top: {y}px; width: {w}px; \
-                                    height: {h}px;'></div>")?;
+                                    height: {h}px;'></div>"
+                )?;
 
                 let is_cmd = opts.req_child("commandType")? == "storedCommand";
                 if is_cmd {
@@ -340,8 +409,14 @@ impl<'a> Translator<'a> {
                     add_start = format!("window.arexiboGui.jsShell({cmd:?}, {with_shell});");
 
                     let kill = if opts.req_child("terminateCommand")? == "1" {
-                        if opts.req_child("useTaskkill")? == "1" { 2 } else { 1 }
-                    } else { 0 };
+                        if opts.req_child("useTaskkill")? == "1" {
+                            2
+                        } else {
+                            1
+                        }
+                    } else {
+                        0
+                    };
                     add_stop = format!("window.arexiboGui.jsStopShell({kill});");
                 }
             }
@@ -362,7 +437,10 @@ fn object_fit(el: &Element) -> &'static str {
 }
 
 fn object_pos(el: &Element) -> &'static str {
-    match (el.def_attr("align", "center"), el.def_attr("halign", "middle")) {
+    match (
+        el.def_attr("align", "center"),
+        el.def_attr("halign", "middle"),
+    ) {
         ("left", "top") => " object-position: left top;",
         ("left", "bottom") => " object-position: left bottom;",
         ("left", _) => " object-position: left;",

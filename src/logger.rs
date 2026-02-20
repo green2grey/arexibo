@@ -3,8 +3,8 @@
 
 //! Xibo logger.
 
-use time::OffsetDateTime;
 use parking_lot::Mutex;
+use time::OffsetDateTime;
 
 /// A single cached log entry.
 pub struct LogEntry {
@@ -12,7 +12,6 @@ pub struct LogEntry {
     pub category: &'static str,
     pub message: String,
 }
-
 
 static LOG_ENTRIES: Mutex<Vec<LogEntry>> = Mutex::new(Vec::new());
 

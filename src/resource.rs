@@ -3,15 +3,14 @@
 
 //! Handling resources such as media and layout files.
 
+use crate::config::CmsSettings;
+use crate::{layout, layout::TRANSLATOR_VERSION, util, xmds};
+use anyhow::{ensure, Context, Result};
+use md5::{Digest, Md5};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{fs, io, io::Write, path::PathBuf, sync::Arc};
-use anyhow::{ensure, Context, Result};
-use md5::{Md5, Digest};
-use serde::{Serialize, Deserialize};
 use ureq::Agent;
-use crate::{util, layout, layout::TRANSLATOR_VERSION, xmds};
-use crate::config::CmsSettings;
-
 
 pub type LayoutId = i64;
 
@@ -41,7 +40,7 @@ impl ReqFile {
     pub fn description(&self) -> String {
         match self {
             ReqFile::File { typ, name, .. } => format!("{} {}", typ, name),
-            ReqFile::Resource { mediaid, .. } => format!("resource {}", mediaid)
+            ReqFile::Resource { mediaid, .. } => format!("resource {}", mediaid),
         }
     }
 
@@ -92,7 +91,6 @@ pub enum Resource {
     Resource(Arc<ResourceInfo>),
 }
 
-
 pub struct Cache {
     dir: PathBuf,
     agent: Agent,
@@ -115,7 +113,8 @@ impl Cache {
 
         // check for a cached inventory JSON file
         if let Some(saved) = fs::File::open(dir.join("content.json"))
-            .ok().and_then(|fp| serde_json::from_reader(fp).ok())
+            .ok()
+            .and_then(|fp| serde_json::from_reader(fp).ok())
         {
             // ensure all mentioned files are present, remove missing entries
             content = saved;
@@ -126,21 +125,29 @@ impl Cache {
                 Resource::Layout(layout) => {
                     TRANSLATOR_VERSION != 0 &&   // 0 = development mode
                     layout.translated_version == TRANSLATOR_VERSION
-                },
-                _ => true
+                }
+                _ => true,
             });
         }
 
-        let code_map = content.values().filter_map(|v| {
-            if let Resource::Layout(info) = v {
-                if let Some(code) = &info.code {
-                    return Some((code.clone(), info.id));
+        let code_map = content
+            .values()
+            .filter_map(|v| {
+                if let Resource::Layout(info) = v {
+                    if let Some(code) = &info.code {
+                        return Some((code.clone(), info.id));
+                    }
                 }
-            }
-            None
-        }).collect();
+                None
+            })
+            .collect();
 
-        Ok(Self { dir, agent: cms.make_agent(no_verify)?, content, code_map })
+        Ok(Self {
+            dir,
+            agent: cms.make_agent(no_verify)?,
+            content,
+            code_map,
+        })
     }
 
     pub fn dir(&self) -> &PathBuf {
@@ -149,10 +156,16 @@ impl Cache {
 
     pub fn has(&self, res: &ReqFile) -> bool {
         match *res {
-            ReqFile::Resource { id, updated, .. } => {
-                self.get_resource(id).map_or(false, |res| res.updated == updated)
-            }
-            ReqFile::File { ref name, ref md5, typ, id, .. } => {
+            ReqFile::Resource { id, updated, .. } => self
+                .get_resource(id)
+                .map_or(false, |res| res.updated == updated),
+            ReqFile::File {
+                ref name,
+                ref md5,
+                typ,
+                id,
+                ..
+            } => {
                 if typ == "layout" {
                     self.get_layout(id).map_or(false, |res| &res.md5 == md5)
                 } else {
@@ -164,36 +177,63 @@ impl Cache {
 
     pub fn download(&mut self, res: ReqFile, cms: &mut xmds::Cms) -> Result<()> {
         match res {
-            ReqFile::Resource { id, layoutid, regionid, mediaid, updated } => {
-                let data = cms.get_resource(layoutid, &regionid.to_string(),
-                                            &mediaid.to_string())?;
+            ReqFile::Resource {
+                id,
+                layoutid,
+                regionid,
+                mediaid,
+                updated,
+            } => {
+                let data =
+                    cms.get_resource(layoutid, &regionid.to_string(), &mediaid.to_string())?;
                 let fname = format!("{}.html", id);
 
                 // TODO: re-download after given updateInterval
                 let duration = data.find("<!-- DURATION=").and_then(|index| {
-                    data[index + 14..].find(" -->").and_then(|endindex| {
-                        data[index + 14..][..endindex].parse::<f64>().ok()
-                    })
+                    data[index + 14..]
+                        .find(" -->")
+                        .and_then(|endindex| data[index + 14..][..endindex].parse::<f64>().ok())
                 });
                 let numitems = data.find("<!-- NUMITEMS=").and_then(|index| {
-                    data[index + 14..].find(" -->").and_then(|endindex| {
-                        data[index + 14..][..endindex].parse::<i64>().ok()
-                    })
+                    data[index + 14..]
+                        .find(" -->")
+                        .and_then(|endindex| data[index + 14..][..endindex].parse::<i64>().ok())
                 });
                 fs::write(self.dir.join(&fname), data)?;
-                self.content.insert(fname, Resource::Resource(Arc::new(
-                    ResourceInfo { id, layoutid, regionid, updated, duration, numitems }
-                )));
+                self.content.insert(
+                    fname,
+                    Resource::Resource(Arc::new(ResourceInfo {
+                        id,
+                        layoutid,
+                        regionid,
+                        updated,
+                        duration,
+                        numitems,
+                    })),
+                );
                 self.save()?;
             }
-            ReqFile::File { id, typ, http, size, md5, path, name, code } => {
+            ReqFile::File {
+                id,
+                typ,
+                http,
+                size,
+                md5,
+                path,
+                name,
+                code,
+            } => {
                 let filename = self.dir.join(&name);
                 if http {
                     match self.download_http(&path, &filename, &md5) {
-                        Ok(_) => {},
+                        Ok(_) => {}
                         Err(e) => {
-                            log::warn!("failing download of {} over http, retrying \
-                                        xmds: {:#}", name, e);
+                            log::warn!(
+                                "failing download of {} over http, retrying \
+                                        xmds: {:#}",
+                                name,
+                                e
+                            );
                             self.download_xmds(id, typ, size, cms, &filename, &md5)?
                         }
                     }
@@ -207,17 +247,22 @@ impl Cache {
                         id,
                         &self.dir.join(&name),
                         &self.dir.join(format!("{}.html", name)),
-                        &self.code_map
+                        &self.code_map,
                     )?;
                     let size = xl.translate()?;
-                    self.content.insert(name, Resource::Layout(Arc::new(
-                        LayoutInfo { id, md5, size, code,
-                                     translated_version: TRANSLATOR_VERSION }
-                    )));
+                    self.content.insert(
+                        name,
+                        Resource::Layout(Arc::new(LayoutInfo {
+                            id,
+                            md5,
+                            size,
+                            code,
+                            translated_version: TRANSLATOR_VERSION,
+                        })),
+                    );
                 } else {
-                    self.content.insert(name, Resource::Media(Arc::new(
-                        MediaInfo { id, size, md5 }
-                    )));
+                    self.content
+                        .insert(name, Resource::Media(Arc::new(MediaInfo { id, size, md5 })));
                 }
                 self.save()?;
             }
@@ -225,8 +270,7 @@ impl Cache {
         Ok(())
     }
 
-    fn download_http(&mut self, path: &str, filename: &PathBuf,
-                     md5: &[u8]) -> Result<()> {
+    fn download_http(&mut self, path: &str, filename: &PathBuf, md5: &[u8]) -> Result<()> {
         let body = self.agent.get(path).call()?.into_body();
         let file = io::BufWriter::new(fs::File::create(filename)?);
         let mut wrapper = HashingWriter::new(file);
@@ -235,8 +279,15 @@ impl Cache {
         Ok(())
     }
 
-    fn download_xmds(&mut self, id: i64, typ: &str, size: u64, cms: &mut xmds::Cms,
-                     filename: &PathBuf, md5: &[u8]) -> Result<()> {
+    fn download_xmds(
+        &mut self,
+        id: i64,
+        typ: &str,
+        size: u64,
+        cms: &mut xmds::Cms,
+        filename: &PathBuf,
+        md5: &[u8],
+    ) -> Result<()> {
         const CHUNK_SIZE: u64 = 1024 * 1024;
         let mut got_size = 0;
         let file = io::BufWriter::new(fs::File::create(filename)?);
@@ -253,7 +304,13 @@ impl Cache {
 
     pub fn update_code_map(&mut self, files: &[ReqFile]) -> Result<()> {
         for file in files {
-            if let ReqFile::File { typ: "layout", id, code: Some(code), .. } = file {
+            if let ReqFile::File {
+                typ: "layout",
+                id,
+                code: Some(code),
+                ..
+            } = file
+            {
                 self.code_map.insert(code.clone(), *id);
             }
         }
@@ -261,28 +318,33 @@ impl Cache {
     }
 
     pub fn get_layout(&self, id: LayoutId) -> Option<Arc<LayoutInfo>> {
-        self.content.get(&format!("{}.xlf", id)).and_then(|entry| match entry {
-            Resource::Layout(layout) => Some(layout.clone()),
-            _ => None
-        })
+        self.content
+            .get(&format!("{}.xlf", id))
+            .and_then(|entry| match entry {
+                Resource::Layout(layout) => Some(layout.clone()),
+                _ => None,
+            })
     }
 
     fn get_media(&self, name: &str) -> Option<Arc<MediaInfo>> {
         self.content.get(name).and_then(|entry| match entry {
             Resource::Media(media) => Some(media.clone()),
-            _ => None
+            _ => None,
         })
     }
 
     fn get_resource(&self, id: i64) -> Option<Arc<ResourceInfo>> {
-        self.content.get(&format!("{}.html", id)).and_then(|entry| match entry {
-            Resource::Resource(res) => Some(res.clone()),
-            _ => None
-        })
+        self.content
+            .get(&format!("{}.html", id))
+            .and_then(|entry| match entry {
+                Resource::Resource(res) => Some(res.clone()),
+                _ => None,
+            })
     }
 
     fn save(&self) -> Result<()> {
-        let fp = fs::File::create(self.dir.join("content.json")).context("writing cache content")?;
+        let fp =
+            fs::File::create(self.dir.join("content.json")).context("writing cache content")?;
         serde_json::to_writer_pretty(fp, &self.content).context("serializing cache content")?;
         Ok(())
     }
@@ -316,7 +378,6 @@ impl Cache {
     }
 }
 
-
 pub struct HashingWriter<W> {
     writer: W,
     hasher: Md5,
@@ -324,7 +385,10 @@ pub struct HashingWriter<W> {
 
 impl<W> HashingWriter<W> {
     pub fn new(writer: W) -> Self {
-        Self { writer, hasher: md5::Md5::new() }
+        Self {
+            writer,
+            hasher: md5::Md5::new(),
+        }
     }
 
     pub fn hash(self) -> Vec<u8> {
@@ -332,7 +396,10 @@ impl<W> HashingWriter<W> {
     }
 }
 
-impl<W> Write for HashingWriter<W> where W: Write {
+impl<W> Write for HashingWriter<W>
+where
+    W: Write,
+{
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let len = self.writer.write(buf)?;
         self.hasher.update(buf);

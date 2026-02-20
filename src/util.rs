@@ -3,14 +3,14 @@
 
 //! Various utilities.
 
-use std::{fs, fmt, path::Path, str::FromStr, time::Duration};
 use anyhow::{Context, Result};
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use dbus::blocking::Connection;
-use md5::{Md5, Digest};
+use md5::{Digest, Md5};
 use nix::{sys::statvfs, unistd::gethostname};
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Deserializer, Serializer, de::Error};
+use serde::{de::Error, Deserialize, Deserializer, Serializer};
+use std::{fmt, fs, path::Path, str::FromStr, time::Duration};
 
 /// Common time format used by the CMS.
 pub static TIME_FMT: Lazy<Vec<time::format_description::FormatItem>> = Lazy::new(|| {
@@ -34,23 +34,26 @@ impl FromStr for Base64Field {
     }
 }
 
-
 /// Helpers for parsing XML
 pub trait ElementExt {
     fn req_attr<'a>(&'a self, attr: &'a str) -> Result<&'a str>;
     fn def_attr<'a>(&'a self, attr: &'a str, def: &'a str) -> &'a str;
     fn parse_attr<T: FromStr>(&self, attr: &str) -> Result<T>
-        where T::Err: std::error::Error + Sync + Send + 'static;
+    where
+        T::Err: std::error::Error + Sync + Send + 'static;
     fn req_child<'a>(&'a self, child: &'a str) -> Result<&'a str>;
     fn parse_child<T: FromStr>(&self, child: &str) -> Result<T>
-        where T::Err: std::error::Error + Sync + Send + 'static;
+    where
+        T::Err: std::error::Error + Sync + Send + 'static;
     fn def_child<T: FromStr>(&self, child: &str, default: impl Into<T>) -> Result<T>
-        where T::Err: std::error::Error + Sync + Send + 'static;
+    where
+        T::Err: std::error::Error + Sync + Send + 'static;
 }
 
 impl ElementExt for elementtree::Element {
     fn req_attr<'a>(&'a self, attr: &'a str) -> Result<&'a str> {
-        self.get_attr(attr).with_context(|| format!("missing {attr}"))
+        self.get_attr(attr)
+            .with_context(|| format!("missing {attr}"))
     }
 
     fn def_attr<'a>(&'a self, attr: &'a str, def: &'a str) -> &'a str {
@@ -58,36 +61,46 @@ impl ElementExt for elementtree::Element {
     }
 
     fn parse_attr<T: FromStr>(&self, attr: &str) -> Result<T>
-        where T::Err: std::error::Error + Sync + Send + 'static
+    where
+        T::Err: std::error::Error + Sync + Send + 'static,
     {
-        self.get_attr(attr).with_context(|| format!("missing {}", attr))?
-                           .parse().with_context(|| format!("invalid {}", attr))
+        self.get_attr(attr)
+            .with_context(|| format!("missing {}", attr))?
+            .parse()
+            .with_context(|| format!("invalid {}", attr))
     }
 
-    fn req_child<'a>(&'a self, child: &'a str) -> Result<&'a str>
-    {
-        Ok(self.find(child).with_context(|| format!("missing {}", child))?.text())
+    fn req_child<'a>(&'a self, child: &'a str) -> Result<&'a str> {
+        Ok(self
+            .find(child)
+            .with_context(|| format!("missing {}", child))?
+            .text())
     }
 
     fn parse_child<T: FromStr>(&self, child: &str) -> Result<T>
-        where T::Err: std::error::Error + Sync + Send + 'static
+    where
+        T::Err: std::error::Error + Sync + Send + 'static,
     {
-        self.find(child).with_context(|| format!("missing {}", child))?
-                        .text()
-                        .parse().with_context(|| format!("invalid {}", child))
+        self.find(child)
+            .with_context(|| format!("missing {}", child))?
+            .text()
+            .parse()
+            .with_context(|| format!("invalid {}", child))
     }
 
     fn def_child<T: FromStr>(&self, child: &str, default: impl Into<T>) -> Result<T>
-        where T::Err: std::error::Error + Sync + Send + 'static
+    where
+        T::Err: std::error::Error + Sync + Send + 'static,
     {
         match self.find(child) {
             None => Ok(default.into()),
-            Some(el) => el.text()
-                          .parse().with_context(|| format!("invalid {}", child))
+            Some(el) => el
+                .text()
+                .parse()
+                .with_context(|| format!("invalid {}", child)),
         }
     }
 }
-
 
 pub fn percent_decode(s: &str) -> String {
     let mut res = String::new();
@@ -95,20 +108,20 @@ pub fn percent_decode(s: &str) -> String {
     while let Some((i, ch)) = iter.next() {
         match ch {
             '%' => {
-                let codepoint = s.get(i+1..i+3)
-                                 .and_then(|s| u8::from_str_radix(s, 16).ok());
+                let codepoint = s
+                    .get(i + 1..i + 3)
+                    .and_then(|s| u8::from_str_radix(s, 16).ok());
                 if let Some(hex) = codepoint {
                     res.push(hex as char);
                     iter.nth(1);
                 }
-            },
+            }
             '+' => res.push(' '),
             _ => res.push(ch),
         }
     }
     res
 }
-
 
 /// (De)serializing bytestrings for JSON
 pub fn ser_hex<S: Serializer>(v: &[u8], s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -120,7 +133,6 @@ pub fn de_hex<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<Vec<u8>, D
     let s = <String as Deserialize>::deserialize(d)?;
     hex::decode(s).map_err(|_| D::Error::custom("invalid hex string"))
 }
-
 
 /// Retrieve MAC address of a system interface.
 pub fn retrieve_mac() -> Option<String> {
@@ -159,15 +171,16 @@ pub fn get_display_id() -> String {
 
 /// Generate an initial display name.  Tries the hostname.
 pub fn get_display_name() -> String {
-    gethostname().ok().and_then(|s| s.into_string().ok())
-                      .unwrap_or_else(|| "Arexibo Display".into())
+    gethostname()
+        .ok()
+        .and_then(|s| s.into_string().ok())
+        .unwrap_or_else(|| "Arexibo Display".into())
 }
 
-
-const SS_SVC: &str   = "org.freedesktop.ScreenSaver";
-const SS_PATH: &str  = "/ScreenSaver";
+const SS_SVC: &str = "org.freedesktop.ScreenSaver";
+const SS_PATH: &str = "/ScreenSaver";
 const SS_IFACE: &str = "org.freedesktop.ScreenSaver";
-const SS_METH: &str  = "Inhibit";
+const SS_METH: &str = "Inhibit";
 
 /// Inhibit the screensaver.
 pub fn inhibit_screensaver() -> Result<u32> {
@@ -177,12 +190,13 @@ pub fn inhibit_screensaver() -> Result<u32> {
     Ok(res.0)
 }
 
-
 /// Get available and total space in directory.
 pub fn space_info(path: &Path) -> Result<(u64, u64)> {
     let res = statvfs::statvfs(path)?;
-    Ok((res.blocks_available() * res.fragment_size(),
-        res.blocks() * res.fragment_size()))
+    Ok((
+        res.blocks_available() * res.fragment_size(),
+        res.blocks() * res.fragment_size(),
+    ))
 }
 
 /// Get current IANA timezone name ("Europe/Berlin").

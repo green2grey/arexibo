@@ -3,17 +3,25 @@
 
 //! Main collect loop that also processes XMR requests.
 
-use std::{fmt, fs, path::{Path, PathBuf}, thread, time::Duration};
+use crate::config::{CmsSettings, PlayerSettings};
+use crate::resource::Cache;
+use crate::schedule::Schedule;
+use crate::{logger, util, xmds, xmr};
 use anyhow::{bail, Context, Result};
 use crossbeam_channel::{after, never, select, tick, Receiver, Sender};
 use itertools::Itertools;
 use rand::rngs::OsRng;
-use rsa::{RsaPrivateKey, RsaPublicKey, pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey}};
+use rsa::{
+    pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey},
+    RsaPrivateKey, RsaPublicKey,
+};
+use std::{
+    fmt, fs,
+    path::{Path, PathBuf},
+    thread,
+    time::Duration,
+};
 use subprocess::Popen;
-use crate::config::{CmsSettings, PlayerSettings};
-use crate::{logger, util, xmds, xmr};
-use crate::resource::Cache;
-use crate::schedule::Schedule;
 
 /// Error indicating the display is registered but not yet authorized in the CMS.
 /// Uses a distinct exit code (2) so the kiosk session holder can wait patiently
@@ -23,7 +31,10 @@ pub struct NotAuthorized;
 
 impl fmt::Display for NotAuthorized {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "display is not authorized yet, try again after authorization in the CMS")
+        write!(
+            f,
+            "display is not authorized yet, try again after authorization in the CMS"
+        )
     }
 }
 
@@ -61,6 +72,7 @@ pub struct Handler {
     cache: Cache,
     envdir: PathBuf,
     xmr: Receiver<xmr::Message>,
+    xmr_handle: xmr::Handle,
     schedule: Schedule,
     layouts: Vec<i64>,
     current_layout: i64,
@@ -69,9 +81,15 @@ pub struct Handler {
 
 impl Handler {
     /// Create a new handler, with channels to the GUI thread.
-    pub fn new(cms: CmsSettings, clear_cache: bool, envdir: &Path,
-               no_verify: bool, allow_offline: bool,
-               to_gui: Sender<ToGui>, from_gui: Receiver<FromGui>) -> Result<Self> {
+    pub fn new(
+        cms: CmsSettings,
+        clear_cache: bool,
+        envdir: &Path,
+        no_verify: bool,
+        allow_offline: bool,
+        to_gui: Sender<ToGui>,
+        from_gui: Receiver<FromGui>,
+    ) -> Result<Self> {
         let (privkey, pubkey) = load_or_create_keypair(envdir)?;
         let cache = Cache::new(&cms, envdir.join("res"), clear_cache, no_verify)
             .context("creating cache")?;
@@ -108,25 +126,38 @@ impl Handler {
 
                         Some(settings)
                     }
-                    Err(_) => bail!("initial register failed and no cached settings available")
+                    Err(_) => bail!("initial register failed and no cached settings available"),
                 }
             }
-            Ok(res) => res
+            Ok(res) => res,
         };
 
         // if we got settings, we are registered and authorized
         if let Some(settings) = res {
             // create the XMR manager which sends us updates via channel
-            let (manager, xmr) = xmr::Manager::new(&cms, &settings.xmr_network_address, privkey)?;
+            let (manager, xmr, xmr_handle) = xmr::Manager::new(&cms, &settings, privkey)?;
             thread::spawn(|| manager.run());
 
-            settings.to_file(&setting_file).context("writing player settings")?;
+            settings
+                .to_file(&setting_file)
+                .context("writing player settings")?;
 
-            let mut slf = Self { to_gui, from_gui, settings, cache, xmds, xmr, schedule,
-                                 layouts, envdir: envdir.into(), current_layout: 0,
-                                 shell_process: None };
+            let mut slf = Self {
+                to_gui,
+                from_gui,
+                settings,
+                cache,
+                xmds,
+                xmr,
+                xmr_handle,
+                schedule,
+                layouts,
+                envdir: envdir.into(),
+                current_layout: 0,
+                shell_process: None,
+            };
             slf.update_settings();
-            slf.schedule_check();  // only useful in case of cached schedule
+            slf.schedule_check(); // only useful in case of cached schedule
             Ok(slf)
         } else {
             return Err(NotAuthorized.into());
@@ -139,7 +170,7 @@ impl Handler {
 
     /// Run the main collect loop.
     pub fn run(mut self) -> Result<()> {
-        let mut collect = after(Duration::from_secs(0));  // do first collect immediately
+        let mut collect = after(Duration::from_secs(0)); // do first collect immediately
         let mut screenshot = if self.settings.screenshot_interval != 0 {
             after(Duration::from_secs(self.settings.screenshot_interval * 60))
         } else {
@@ -256,7 +287,14 @@ impl Handler {
         // call register to get updated player settings
         if let Some(settings) = self.xmds.register_display()? {
             if settings != self.settings {
+                let xmr_changed = settings.xmr_network_address != self.settings.xmr_network_address
+                    || settings.xmr_websocket_address != self.settings.xmr_websocket_address
+                    || settings.xmr_type != self.settings.xmr_type
+                    || settings.xmr_cms_key != self.settings.xmr_cms_key;
                 self.settings = settings;
+                if xmr_changed {
+                    self.xmr_handle.update_settings(&self.settings);
+                }
                 self.update_settings();
             }
         } else {
@@ -282,9 +320,16 @@ impl Handler {
             if !self.cache.has(&file) {
                 let filedesc = file.description();
                 let inventory = file.inventory();
-                log::info!("downloading required file {}/{}: {}", i+1, total, filedesc);
-                match self.cache.download(file, &mut self.xmds)
-                                .with_context(|| format!("downloading {}", filedesc))
+                log::info!(
+                    "downloading required file {}/{}: {}",
+                    i + 1,
+                    total,
+                    filedesc
+                );
+                match self
+                    .cache
+                    .download(file, &mut self.xmds)
+                    .with_context(|| format!("downloading {}", filedesc))
                 {
                     Ok(_) => result.push((inventory, true)),
                     Err(e) => {
@@ -312,7 +357,7 @@ impl Handler {
             currentLayoutId: self.current_layout,
             availableSpace: avail,
             totalSpace: total,
-            lastCommandSuccess: false,  // not implemented yet
+            lastCommandSuccess: false, // not implemented yet
             deviceName: &self.settings.display_name,
             timeZone: &util::timezone(),
         };
@@ -326,9 +371,13 @@ impl Handler {
     fn schedule_check(&mut self) {
         let new_layouts = self.schedule.layouts_now();
         if new_layouts != self.layouts {
-            log::info!("new layouts in schedule: {}",
-                       new_layouts.iter().format(", ").to_string());
-            self.to_gui.send(ToGui::Layouts(new_layouts.clone())).unwrap();
+            log::info!(
+                "new layouts in schedule: {}",
+                new_layouts.iter().format(", ").to_string()
+            );
+            self.to_gui
+                .send(ToGui::Layouts(new_layouts.clone()))
+                .unwrap();
             self.layouts = new_layouts;
         }
     }
@@ -336,7 +385,9 @@ impl Handler {
     /// Apply new player settings.
     fn update_settings(&mut self) {
         // let the GUI know to reconfigure itself
-        self.to_gui.send(ToGui::Settings(self.settings.clone())).unwrap();
+        self.to_gui
+            .send(ToGui::Settings(self.settings.clone()))
+            .unwrap();
 
         match &*self.settings.log_level {
             "trace" => log::set_max_level(log::LevelFilter::Trace),
@@ -344,11 +395,10 @@ impl Handler {
             "info" => log::set_max_level(log::LevelFilter::Info),
             "error" => log::set_max_level(log::LevelFilter::Warn),
             "off" => log::set_max_level(log::LevelFilter::Off),
-            s => log::error!("invalid log level {}", s)
+            s => log::error!("invalid log level {}", s),
         }
     }
 }
-
 
 /// Load the RSA private key for the XML channel from disk, or create a new
 /// key if needed.  Returns the public key as a PEM string, which is how

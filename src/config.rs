@@ -3,11 +3,11 @@
 
 //! Definitions for the player configuration.
 
-use std::{collections::HashMap, fs::File, path::Path, time::Duration};
-use anyhow::{Context, Result};
-use md5::{Md5, Digest};
-use serde::{Serialize, Deserialize};
 use crate::command::Command;
+use anyhow::{Context, Result};
+use md5::{Digest, Md5};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, fs::File, path::Path, time::Duration};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PlayerSettings {
@@ -17,6 +17,12 @@ pub struct PlayerSettings {
     pub stats_enabled: bool,
     #[serde(default)]
     pub xmr_network_address: String,
+    #[serde(default)]
+    pub xmr_websocket_address: String,
+    #[serde(default)]
+    pub xmr_type: String,
+    #[serde(default)]
+    pub xmr_cms_key: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
     #[serde(default)]
@@ -41,8 +47,7 @@ pub struct PlayerSettings {
 
 impl PlayerSettings {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        serde_json::from_reader(File::open(path.as_ref())?)
-            .context("deserializing player settings")
+        serde_json::from_reader(File::open(path.as_ref())?).context("deserializing player settings")
     }
 
     pub fn to_file(&self, path: impl AsRef<Path>) -> Result<()> {
@@ -51,10 +56,18 @@ impl PlayerSettings {
     }
 }
 
-fn default_collect_interval() -> u64 { 900 }
-fn default_log_level() -> String { "debug".into() }
-fn default_embedded_server_port() -> u16 { 9696 }
-fn default_display_name() -> String { "Xibo".into() }
+fn default_collect_interval() -> u64 {
+    900
+}
+fn default_log_level() -> String {
+    "debug".into()
+}
+fn default_embedded_server_port() -> u16 {
+    9696
+}
+fn default_display_name() -> String {
+    "Xibo".into()
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CmsSettings {
@@ -67,8 +80,7 @@ pub struct CmsSettings {
 
 impl CmsSettings {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        serde_json::from_reader(File::open(path.as_ref())?)
-            .context("deserializing player settings")
+        serde_json::from_reader(File::open(path.as_ref())?).context("deserializing player settings")
     }
 
     pub fn to_file(&self, path: impl AsRef<Path>) -> Result<()> {
@@ -94,6 +106,7 @@ impl CmsSettings {
             .timeout_connect(Some(Duration::from_secs(3)))
             .tls_config(tls_config)
             .proxy(proxy)
-            .build().into())
+            .build()
+            .into())
     }
 }

@@ -3,14 +3,13 @@
 
 //! Internal webserver to point the webview to.
 
-use std::{sync::Arc, fs, io::Read, io::Seek, thread, collections::HashMap};
-use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, ensure, Result};
 use itertools::Itertools;
-use tiny_http::{Request, Response, ResponseBox, Header, StatusCode};
+use std::path::{Path, PathBuf};
+use std::{collections::HashMap, fs, io::Read, io::Seek, sync::Arc, thread};
+use tiny_http::{Header, Request, Response, ResponseBox, StatusCode};
 
 use crate::util::percent_decode;
-
 
 pub struct Server {
     dir: PathBuf,
@@ -19,13 +18,16 @@ pub struct Server {
 
 impl Server {
     pub fn new(dir: PathBuf, port: u16) -> Result<Self> {
-        let server = tiny_http::Server::http(("127.0.0.1", port))
-            .map_err(|e| anyhow!(e))?;
+        let server = tiny_http::Server::http(("127.0.0.1", port)).map_err(|e| anyhow!(e))?;
         Ok(Self { dir, server })
     }
 
     pub fn port(&self) -> u16 {
-        self.server.server_addr().to_ip().expect("IP address").port()
+        self.server
+            .server_addr()
+            .to_ip()
+            .expect("IP address")
+            .port()
     }
 
     pub fn start_pool(self) {
@@ -33,15 +35,15 @@ impl Server {
         for _ in 0..4 {
             let server = server.clone();
             let dir = self.dir.clone();
-            thread::spawn(move || {
-                loop {
-                    let req = server.recv().unwrap();
-                    match Self::serve(&dir, &req) {
-                        Ok(resp) => {  let _ = req.respond(resp); }
-                        Err(e) => {
-                            log::warn!("processing HTTP req {}: {:#}", req.url(), e);
-                            let _ = req.respond(Response::empty(500));
-                        }
+            thread::spawn(move || loop {
+                let req = server.recv().unwrap();
+                match Self::serve(&dir, &req) {
+                    Ok(resp) => {
+                        let _ = req.respond(resp);
+                    }
+                    Err(e) => {
+                        log::warn!("processing HTTP req {}: {:#}", req.url(), e);
+                        let _ = req.respond(Response::empty(500));
                     }
                 }
             });
@@ -63,12 +65,19 @@ impl Server {
                 let path = dir.join(&parts[0][1..]);
                 let ext = path.extension().and_then(|e| e.to_str());
 
-                let query_params = parts.get(1).map(|par| par.split('&').map(|p| {
-                    let mut kv = p.split('=');
-                    let k = percent_decode(kv.next().unwrap_or(""));
-                    let v = percent_decode(kv.next().unwrap_or(""));
-                    (k, v)
-                }).collect::<HashMap<_, _>>()).unwrap_or_default();
+                let query_params = parts
+                    .get(1)
+                    .map(|par| {
+                        par.split('&')
+                            .map(|p| {
+                                let mut kv = p.split('=');
+                                let k = percent_decode(kv.next().unwrap_or(""));
+                                let v = percent_decode(kv.next().unwrap_or(""));
+                                (k, v)
+                            })
+                            .collect::<HashMap<_, _>>()
+                    })
+                    .unwrap_or_default();
 
                 if !path.is_file() {
                     log::warn!("processing HTTP req {}: 404 not found", req.url());
@@ -80,8 +89,9 @@ impl Server {
                 if ext == Some("html") && query_params.contains_key("w") {
                     let mut data = Vec::new();
                     fp.read_to_end(&mut data)?;
-                    if let Some(i) = (0..data.len())
-                        .find(|&i| data[i..].starts_with(b"[[ViewPortWidth]]")) {
+                    if let Some(i) =
+                        (0..data.len()).find(|&i| data[i..].starts_with(b"[[ViewPortWidth]]"))
+                    {
                         let mut new_data = data[..i].to_vec();
                         new_data.extend_from_slice(query_params["w"].as_bytes());
                         new_data.extend_from_slice(&data[i + 17..]);
@@ -89,8 +99,7 @@ impl Server {
                     }
 
                     return Ok(Response::from_data(data)
-                        .with_header(Header::from_bytes(b"Content-Type",
-                                                        b"text/html").unwrap())
+                        .with_header(Header::from_bytes(b"Content-Type", b"text/html").unwrap())
                         .boxed());
                 }
 
@@ -98,8 +107,7 @@ impl Server {
                 for h in req.headers() {
                     if h.field.equiv("Range") {
                         let total_size = fp.metadata()?.len();
-                        let (from, to, size) = parse_range(total_size,
-                                                           h.value.to_string())?;
+                        let (from, to, size) = parse_range(total_size, h.value.to_string())?;
                         fp.seek(std::io::SeekFrom::Start(from))?;
                         let stream = fp.take(size);
 
@@ -112,8 +120,10 @@ impl Server {
                             ],
                             stream,
                             Some(size as usize),
-                            None
-                        ).with_chunked_threshold(usize::MAX).boxed());
+                            None,
+                        )
+                        .with_chunked_threshold(usize::MAX)
+                        .boxed());
                     }
                 }
 
@@ -161,15 +171,15 @@ new QWebChannel(qt.webChannelTransport, function(channel) {
 
 const SPLASH_JPG: &[u8] = include_bytes!("../assets/splash.jpg");
 
-
 /// Parse a HTTP Range header.
 fn parse_range(total_size: u64, header: String) -> Result<(u64, u64, u64)> {
     let mut parts = header.split(&['=', '-'][..]);
     let (from, to) = match parts.next_tuple() {
-        Some(("bytes", from, to)) => {
-            (from.parse().unwrap_or(0), to.parse().unwrap_or(total_size - 1))
-        }
-        _ => bail!("invalid Range header")
+        Some(("bytes", from, to)) => (
+            from.parse().unwrap_or(0),
+            to.parse().unwrap_or(total_size - 1),
+        ),
+        _ => bail!("invalid Range header"),
     };
     ensure!(from <= to && to < total_size, "invalid Range from/to");
     let size = to - from + 1;
